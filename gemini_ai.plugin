@@ -241,6 +241,15 @@ class GeminiPlugin(BasePlugin):
         self.banner_base_text = ""
         self.banner_end_time = 0.0
 
+    def _show_error_banner(self, text: str):
+        self._hide_top_banner()
+        run_on_ui_thread(lambda: self._show_top_banner(text))
+        import threading
+        def auto_hide():
+            time.sleep(4)
+            self._hide_top_banner()
+        threading.Thread(target=auto_hide, daemon=True).start()
+
     def _show_top_banner(self, text: str):
         fragment = get_last_fragment()
         if not fragment:
@@ -346,9 +355,17 @@ class GeminiPlugin(BasePlugin):
                 else:
                     result_text = "Не удалось сгенерировать ответ."
             else:
-                result_text = f"❌ Ошибка API: {response.status_code}\n{response.text[:200]}"
+                def finish():
+                    self._hide_top_banner()
+                    self._show_error_banner("Ошибка API, попробуйте позже")
+                run_on_ui_thread(finish)
+                return
         except Exception as e:
-            result_text = f"❌ Ошибка сети: {str(e)}"
+            def finish():
+                self._hide_top_banner()
+                self._show_error_banner("Ошибка сети")
+            run_on_ui_thread(finish)
+            return
 
         def finish():
             self._hide_top_banner()
@@ -406,9 +423,17 @@ class GeminiPlugin(BasePlugin):
                 else:
                     result_text = "Не удалось исправить текст."
             else:
-                result_text = f"❌ Ошибка API: {response.status_code}\n{response.text[:200]}"
+                def finish():
+                    self._hide_top_banner()
+                    self._show_error_banner("Ошибка API, попробуйте позже")
+                run_on_ui_thread(finish)
+                return
         except Exception as e:
-            result_text = f"❌ Ошибка сети: {str(e)}"
+            def finish():
+                self._hide_top_banner()
+                self._show_error_banner("Ошибка сети")
+            run_on_ui_thread(finish)
+            return
 
         def finish():
             self._hide_top_banner()
@@ -468,9 +493,17 @@ class GeminiPlugin(BasePlugin):
                 else:
                     result_text = "Не удалось исправить текст."
             else:
-                result_text = f"❌ Ошибка API: {response.status_code}\n{response.text[:200]}"
+                def finish():
+                    self._hide_top_banner()
+                    self._show_error_banner("Ошибка API, попробуйте позже")
+                run_on_ui_thread(finish)
+                return
         except Exception as e:
-            result_text = f"❌ Ошибка сети: {str(e)}"
+            def finish():
+                self._hide_top_banner()
+                self._show_error_banner("Ошибка сети")
+            run_on_ui_thread(finish)
+            return
 
         def finish():
             self._hide_top_banner()
@@ -576,9 +609,17 @@ class GeminiPlugin(BasePlugin):
                 else:
                     result_text = "Не удалось сгенерировать ответ."
             else:
-                result_text = f"❌ Ошибка API: {response.status_code}\n{response.text[:200]}"
+                def finish():
+                    self._hide_top_banner()
+                    self._show_error_banner("Ошибка API, попробуйте позже")
+                run_on_ui_thread(finish)
+                return
         except Exception as e:
-            result_text = f"❌ Ошибка сети: {str(e)}"
+            def finish():
+                self._hide_top_banner()
+                self._show_error_banner("Ошибка сети")
+            run_on_ui_thread(finish)
+            return
 
         def finish():
             self._hide_top_banner()
