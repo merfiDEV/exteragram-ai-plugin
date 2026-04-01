@@ -2,7 +2,7 @@
 
 > Google Gemini & OpenRouter AI — прямо в вашем Telegram-клиенте
 
-[![Version](https://img.shields.io/badge/version-1.2.0-7C4DFF?style=for-the-badge&logo=github)](https://github.com/)
+[![Version](https://img.shields.io/badge/version-1.3.0-7C4DFF?style=for-the-badge&logo=github)](https://github.com/)
 [![Platform](https://img.shields.io/badge/platform-Android-3DDC84?style=for-the-badge&logo=android)](https://plugins.exteragram.app)
 [![Python](https://img.shields.io/badge/python-3.11-3776AB?style=for-the-badge&logo=python)](https://chaquo.com/chaquopy/)
 [![License](https://img.shields.io/badge/license-MIT-555555?style=for-the-badge)](LICENSE)
@@ -15,6 +15,7 @@
 |:-------:|:---------:|:------:|
 | `.g <запрос>` | **Google Gemini** | `gemini-2.5-flash-lite` |
 | `.o <запрос>` | **OpenRouter** | Любая (по умолчанию `openai/gpt-5.2`) |
+| `.gfix <текст>` | **Google Gemini** | Исправление текста |
 
 - 🎨 **Material Design 3** — уведомления в стиле M3 с тёмной темой
 - ⚡ **Асинхронность** — UI не блокируется во время запросов
@@ -57,6 +58,9 @@
 .o Напиши Python-скрипт для парсинга погоды
 .o Составь план изучения машинного обучения
 .o Что такое квантовые вычисления?
+
+.gfix привет как дела
+.gfix исправь этот текст пжлст
 ```
 
 ---
