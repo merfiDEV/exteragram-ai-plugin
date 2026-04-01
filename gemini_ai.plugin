@@ -1,0 +1,441 @@
+import re
+import time
+import requests
+from typing import Any
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from client_utils import run_on_queue, get_last_fragment, send_message
+from markdown_utils import parse_markdown
+from hook_utils import get_private_field
+from android_utils import run_on_ui_thread, log
+from ui.settings import Input, Header
+from android.graphics import Color
+from android.graphics.drawable import GradientDrawable
+from android.view import Gravity
+from android.view import ViewGroup
+from android.widget import ImageView, LinearLayout, PopupWindow, TextView
+from android import R as R_android
+
+
+__id__ = "gemini_ai_plugin"
+__name__ = "Gemini AI"
+__description__ = "Запросы к Google Gemini через .g и OpenRouter через .o."
+__author__ = "@Tyta_Zdesyaa777"
+__version__ = "1.2.0"
+__icon__ = "velikiArbyzz_by_TgEmodziBot/59"
+__min_version__ = "11.12.0"
+
+
+def gemini_to_tg_markdown(text: str) -> str:
+    lines = text.split('\n')
+    result = []
+    in_code_block = False
+    code_block_lang = ""
+    code_block_lines = []
+
+    for line in lines:
+        if line.strip().startswith('```'):
+            if not in_code_block:
+                in_code_block = True
+                lang = line.strip()[3:].strip()
+                code_block_lang = lang
+                code_block_lines = []
+            else:
+                in_code_block = False
+                code_content = '\n'.join(code_block_lines)
+                if code_block_lang:
+                    result.append(f'```{code_block_lang}')
+                else:
+                    result.append('```')
+                result.append(code_content)
+                result.append('```')
+                code_block_lang = ""
+                code_block_lines = []
+            continue
+
+        if in_code_block:
+            code_block_lines.append(line)
+            continue
+
+        header_match = re.match(r'^(#{1,6})\s+(.*)', line)
+        if header_match:
+            header_text = header_match.group(2).strip()
+            header_text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', header_text)
+            result.append(f'*{header_text}*')
+            continue
+
+        line = re.sub(r'\*\*\*(.+?)\*\*\*', r'*_\1_*', line)
+        line = re.sub(r'\*\*(.+?)\*\*', r'*\1*', line)
+
+        line = re.sub(r'^\s*[-*]\s+', '• ', line)
+
+        result.append(line)
+
+    if in_code_block:
+        code_content = '\n'.join(code_block_lines)
+        if code_block_lang:
+            result.append(f'```{code_block_lang}')
+        else:
+            result.append('```')
+        result.append(code_content)
+        result.append('```')
+
+    return '\n'.join(result)
+
+
+class GeminiPlugin(BasePlugin):
+    def __init__(self):
+        super().__init__()
+        self.banner_popup = None
+        self.banner_text_view = None
+        self.banner_base_text = ""
+        self.banner_end_time = 0.0
+        self.banner_start_time = 0.0
+        self.banner_token = 0
+
+    def on_plugin_load(self):
+        self.add_on_send_message_hook()
+        log("Gemini AI Plugin v1.2.0 loaded!")
+
+    def create_settings(self) -> list:
+        return [
+            Header(text="Конфигурация API"),
+            Input(
+                key="gemini_api_key",
+                text="API Ключ",
+                subtext="Получите его на aistudio.google.com",
+                default="",
+                icon="msg_permissions"
+            ),
+            Header(text="OpenRouter API"),
+            Input(
+                key="openrouter_api_key",
+                text="API Ключ OpenRouter",
+                subtext="Получите его на openrouter.ai",
+                default="",
+                icon="msg_permissions"
+            ),
+            Input(
+                key="openrouter_model",
+                text="Модель OpenRouter",
+                subtext="Пример: openai/gpt-5.2",
+                default="openai/gpt-5.2",
+                icon="msg_settings"
+            ),
+            Header(text="Уведомления"),
+            Input(
+                key="send_immediately",
+                text="Сразу отправлять ответ",
+                subtext="true = отправлять, false = вставлять в поле ввода",
+                default="true",
+                icon="msg_settings"
+            ),
+            Input(
+                key="notify_position",
+                text="Где показывать уведомление",
+                subtext="top = сверху, bottom = снизу",
+                default="top",
+                icon="msg_settings"
+            )
+        ]
+
+    def on_send_message_hook(self, account: int, params: Any) -> HookResult:
+        text = params.message
+        if not isinstance(text, str):
+            return HookResult()
+
+        stripped = text.strip()
+        if stripped.startswith(".g "):
+            return self._handle_gemini_request(stripped, params)
+        if stripped.startswith(".o "):
+            return self._handle_openrouter_request(stripped, params)
+
+        return HookResult()
+
+    def _handle_gemini_request(self, stripped: str, params: Any) -> HookResult:
+        prompt = stripped[3:].strip()
+        if not prompt:
+            return HookResult()
+
+        api_key = self.get_setting("gemini_api_key", "")
+        if not api_key:
+            params.message = "⚠️ Ошибка: Введите API-ключ в настройках плагина!"
+            return HookResult(strategy=HookStrategy.MODIFY, params=params)
+
+        run_on_ui_thread(lambda: self._show_top_banner("Gemini думает..."))
+        run_on_queue(lambda: self._fetch_gemini(prompt, params.peer, api_key))
+
+        return HookResult(strategy=HookStrategy.CANCEL)
+
+    def _handle_openrouter_request(self, stripped: str, params: Any) -> HookResult:
+        prompt = stripped[3:].strip()
+        if not prompt:
+            return HookResult()
+
+        api_key = self.get_setting("openrouter_api_key", "")
+        if not api_key:
+            params.message = "⚠️ Ошибка: Введите API-ключ OpenRouter в настройках плагина!"
+            return HookResult(strategy=HookStrategy.MODIFY, params=params)
+
+        model = self.get_setting("openrouter_model", "openai/gpt-5.2")
+        run_on_ui_thread(lambda: self._show_top_banner("OpenRouter думает..."))
+        run_on_queue(lambda: self._fetch_openrouter(prompt, params.peer, api_key, model))
+
+        return HookResult(strategy=HookStrategy.CANCEL)
+
+    def _hide_top_banner(self):
+        if self.banner_popup:
+            try:
+                self.banner_popup.dismiss()
+            except Exception:
+                pass
+        self.banner_popup = None
+        self.banner_text_view = None
+        self.banner_base_text = ""
+        self.banner_end_time = 0.0
+
+    def _show_top_banner(self, text: str):
+        fragment = get_last_fragment()
+        if not fragment:
+            return
+        activity = fragment.getParentActivity()
+        if not activity:
+            return
+
+        self._hide_top_banner()
+
+        position = str(self.get_setting("notify_position", "top")).strip().lower()
+        if position not in {"top", "bottom"}:
+            position = "top"
+
+        def dp(value: int) -> int:
+            density = activity.getResources().getDisplayMetrics().density
+            return int(value * density + 0.5)
+
+        layout = LinearLayout(activity)
+        layout.setOrientation(LinearLayout.HORIZONTAL)
+        layout.setPadding(dp(14), dp(10), dp(14), dp(10))
+
+        background = GradientDrawable()
+        background.setCornerRadius(dp(12))
+        background.setColor(Color.parseColor("#202124"))
+        background.setStroke(dp(1), Color.parseColor("#3C4043"))
+        layout.setBackground(background)
+
+        icon_view = ImageView(activity)
+        icon_view.setImageResource(R_android.drawable.ic_dialog_info)
+        icon_view.setColorFilter(Color.parseColor("#8AB4F8"))
+        icon_params = LinearLayout.LayoutParams(dp(20), dp(20))
+        icon_params.rightMargin = dp(8)
+        layout.addView(icon_view, icon_params)
+
+        text_view = TextView(activity)
+        text_view.setTextColor(Color.parseColor("#E8EAED"))
+        text_view.setTextSize(13)
+        text_view.setMaxLines(2)
+        text_view.setText(text)
+        text_params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        layout.addView(text_view, text_params)
+
+        popup = PopupWindow(layout, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        popup.setTouchable(False)
+        popup.setOutsideTouchable(False)
+        popup.setFocusable(False)
+        try:
+            popup.setElevation(dp(6))
+        except Exception:
+            pass
+
+        root_view = activity.getWindow().getDecorView()
+        if position == "bottom":
+            popup.showAtLocation(root_view, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 0, dp(16))
+        else:
+            popup.showAtLocation(root_view, Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, dp(16))
+
+        self.banner_popup = popup
+        self.banner_text_view = text_view
+        self.banner_base_text = text
+        self.banner_end_time = 0.0
+        self.banner_start_time = time.time()
+        self.banner_token += 1
+        self._schedule_banner_update(self.banner_token)
+
+    def _schedule_banner_update(self, token: int):
+        def update():
+            if token != self.banner_token:
+                return
+            if not self.banner_popup or not self.banner_text_view:
+                return
+            elapsed = max(0, int(time.time() - self.banner_start_time))
+            minutes = elapsed // 60
+            seconds = elapsed % 60
+            self.banner_text_view.setText(f"{self.banner_base_text} · {minutes}:{seconds:02d}")
+            self._schedule_banner_update(token)
+
+        run_on_ui_thread(update, 1000)
+
+    def _fetch_gemini(self, prompt: str, peer_id: Any, api_key: str):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}]
+        }
+
+        try:
+            response = requests.post(url, json=payload, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                candidates = data.get('candidates', [])
+                if candidates:
+                    answer = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', 'Пустой ответ')
+                    result_text = answer
+                else:
+                    result_text = "Не удалось сгенерировать ответ."
+            else:
+                result_text = f"❌ Ошибка API: {response.status_code}\n{response.text[:200]}"
+        except Exception as e:
+            result_text = f"❌ Ошибка сети: {str(e)}"
+
+        def finish():
+            self._hide_top_banner()
+
+            tg_text = gemini_to_tg_markdown(result_text)
+
+            try:
+                parsed = parse_markdown(tg_text)
+                text_to_send = parsed.text
+                entities = []
+                for raw_entity in parsed.entities:
+                    entities.append(raw_entity.to_tlrpc_object())
+            except SyntaxError as e:
+                log(f"Markdown syntax error: {e}")
+                text_to_send = result_text
+                entities = []
+            except Exception as e:
+                log(f"Markdown error: {e}")
+                text_to_send = result_text
+                entities = []
+
+            if self._should_send_immediately():
+                send_message({
+                    "message": text_to_send,
+                    "entities": entities,
+                    "peer": peer_id
+                })
+            else:
+                if not self._insert_into_input(text_to_send):
+                    send_message({
+                        "message": text_to_send,
+                        "entities": entities,
+                        "peer": peer_id
+                    })
+
+        run_on_ui_thread(finish)
+
+    def _should_send_immediately(self) -> bool:
+        value = str(self.get_setting("send_immediately", "true")).strip().lower()
+        return value in {"1", "true", "yes", "y", "on"}
+
+    def _insert_into_input(self, text: str) -> bool:
+        fragment = get_last_fragment()
+        if not fragment:
+            return False
+
+        activity = None
+        try:
+            activity = fragment.getParentActivity()
+        except Exception:
+            activity = None
+
+        chat_enter_view = None
+        if activity:
+            chat_enter_view = get_private_field(activity, "chatActivityEnterView")
+        if not chat_enter_view:
+            chat_enter_view = get_private_field(fragment, "chatActivityEnterView")
+        if not chat_enter_view:
+            return False
+
+        try:
+            chat_enter_view.setFieldText(text, True, False)
+        except Exception:
+            try:
+                chat_enter_view.setFieldText(text, False, False)
+            except Exception:
+                try:
+                    message_edit = get_private_field(chat_enter_view, "messageEditText")
+                    if not message_edit:
+                        return False
+                    message_edit.setText(text)
+                except Exception:
+                    return False
+
+        try:
+            message_edit = get_private_field(chat_enter_view, "messageEditText")
+            if message_edit:
+                message_edit.requestFocus()
+        except Exception:
+            pass
+
+        return True
+
+    def _fetch_openrouter(self, prompt: str, peer_id: Any, api_key: str, model: str):
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                choices = data.get("choices", [])
+                if choices:
+                    result_text = choices[0].get("message", {}).get("content", "Пустой ответ")
+                else:
+                    result_text = "Не удалось сгенерировать ответ."
+            else:
+                result_text = f"❌ Ошибка API: {response.status_code}\n{response.text[:200]}"
+        except Exception as e:
+            result_text = f"❌ Ошибка сети: {str(e)}"
+
+        def finish():
+            self._hide_top_banner()
+
+            tg_text = gemini_to_tg_markdown(result_text)
+
+            try:
+                parsed = parse_markdown(tg_text)
+                text_to_send = parsed.text
+                entities = []
+                for raw_entity in parsed.entities:
+                    entities.append(raw_entity.to_tlrpc_object())
+            except SyntaxError as e:
+                log(f"Markdown syntax error: {e}")
+                text_to_send = result_text
+                entities = []
+            except Exception as e:
+                log(f"Markdown error: {e}")
+                text_to_send = result_text
+                entities = []
+
+            if self._should_send_immediately():
+                send_message({
+                    "message": text_to_send,
+                    "entities": entities,
+                    "peer": peer_id
+                })
+            else:
+                if not self._insert_into_input(text_to_send):
+                    send_message({
+                        "message": text_to_send,
+                        "entities": entities,
+                        "peer": peer_id
+                    })
+
+        run_on_ui_thread(finish)
