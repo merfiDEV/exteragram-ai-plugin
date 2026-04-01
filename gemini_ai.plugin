@@ -163,8 +163,6 @@ class GeminiPlugin(BasePlugin):
             return self._handle_openrouter_request(stripped, params)
         if stripped.startswith(".gfix "):
             return self._handle_gfix_request(stripped, params)
-        if stripped.startswith(".ofix "):
-            return self._handle_ofix_request(stripped, params)
 
         return HookResult()
 
@@ -214,22 +212,6 @@ class GeminiPlugin(BasePlugin):
 
         return HookResult(strategy=HookStrategy.CANCEL)
 
-    def _handle_ofix_request(self, stripped: str, params: Any) -> HookResult:
-        prompt = stripped[6:].strip()
-        if not prompt:
-            return HookResult()
-
-        api_key = self.get_setting("openrouter_api_key", "")
-        if not api_key:
-            params.message = "⚠️ Ошибка: Введите API-ключ OpenRouter в настройках плагина!"
-            return HookResult(strategy=HookStrategy.MODIFY, params=params)
-
-        model = self.get_setting("openrouter_model", "openai/gpt-5.2")
-        run_on_ui_thread(lambda: self._show_top_banner("Исправляю текст..."))
-        run_on_queue(lambda: self._fetch_ofix(prompt, params.peer, api_key, model))
-
-        return HookResult(strategy=HookStrategy.CANCEL)
-
     def _hide_top_banner(self):
         if self.banner_popup:
             try:
@@ -240,15 +222,6 @@ class GeminiPlugin(BasePlugin):
         self.banner_text_view = None
         self.banner_base_text = ""
         self.banner_end_time = 0.0
-
-    def _show_error_banner(self, text: str):
-        self._hide_top_banner()
-        run_on_ui_thread(lambda: self._show_top_banner(text))
-        import threading
-        def auto_hide():
-            time.sleep(4)
-            self._hide_top_banner()
-        threading.Thread(target=auto_hide, daemon=True).start()
 
     def _show_top_banner(self, text: str):
         fragment = get_last_fragment()
@@ -355,17 +328,9 @@ class GeminiPlugin(BasePlugin):
                 else:
                     result_text = "Не удалось сгенерировать ответ."
             else:
-                def finish():
-                    self._hide_top_banner()
-                    self._show_error_banner("Ошибка API, попробуйте позже")
-                run_on_ui_thread(finish)
-                return
+                result_text = f"❌ Ошибка API: {response.status_code}\n{response.text[:200]}"
         except Exception as e:
-            def finish():
-                self._hide_top_banner()
-                self._show_error_banner("Ошибка сети")
-            run_on_ui_thread(finish)
-            return
+            result_text = f"❌ Ошибка сети: {str(e)}"
 
         def finish():
             self._hide_top_banner()
@@ -423,87 +388,9 @@ class GeminiPlugin(BasePlugin):
                 else:
                     result_text = "Не удалось исправить текст."
             else:
-                def finish():
-                    self._hide_top_banner()
-                    self._show_error_banner("Ошибка API, попробуйте позже")
-                run_on_ui_thread(finish)
-                return
+                result_text = f"❌ Ошибка API: {response.status_code}\n{response.text[:200]}"
         except Exception as e:
-            def finish():
-                self._hide_top_banner()
-                self._show_error_banner("Ошибка сети")
-            run_on_ui_thread(finish)
-            return
-
-        def finish():
-            self._hide_top_banner()
-
-            try:
-                parsed = parse_markdown(result_text)
-                text_to_send = parsed.text
-                entities = []
-                for raw_entity in parsed.entities:
-                    entities.append(raw_entity.to_tlrpc_object())
-            except SyntaxError as e:
-                log(f"Markdown syntax error: {e}")
-                text_to_send = result_text
-                entities = []
-            except Exception as e:
-                log(f"Markdown error: {e}")
-                text_to_send = result_text
-                entities = []
-
-            if self._should_send_immediately():
-                send_message({
-                    "message": text_to_send,
-                    "entities": entities,
-                    "peer": peer_id
-                })
-            else:
-                if not self._insert_into_input(text_to_send):
-                    send_message({
-                        "message": text_to_send,
-                        "entities": entities,
-                        "peer": peer_id
-                    })
-
-        run_on_ui_thread(finish)
-
-    def _fetch_ofix(self, prompt: str, peer_id: Any, api_key: str, model: str):
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": GFIX_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
-            ]
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-
-        try:
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                choices = data.get("choices", [])
-                if choices:
-                    result_text = choices[0].get("message", {}).get("content", "Пустой ответ")
-                else:
-                    result_text = "Не удалось исправить текст."
-            else:
-                def finish():
-                    self._hide_top_banner()
-                    self._show_error_banner("Ошибка API, попробуйте позже")
-                run_on_ui_thread(finish)
-                return
-        except Exception as e:
-            def finish():
-                self._hide_top_banner()
-                self._show_error_banner("Ошибка сети")
-            run_on_ui_thread(finish)
-            return
+            result_text = f"❌ Ошибка сети: {str(e)}"
 
         def finish():
             self._hide_top_banner()
@@ -609,17 +496,9 @@ class GeminiPlugin(BasePlugin):
                 else:
                     result_text = "Не удалось сгенерировать ответ."
             else:
-                def finish():
-                    self._hide_top_banner()
-                    self._show_error_banner("Ошибка API, попробуйте позже")
-                run_on_ui_thread(finish)
-                return
+                result_text = f"❌ Ошибка API: {response.status_code}\n{response.text[:200]}"
         except Exception as e:
-            def finish():
-                self._hide_top_banner()
-                self._show_error_banner("Ошибка сети")
-            run_on_ui_thread(finish)
-            return
+            result_text = f"❌ Ошибка сети: {str(e)}"
 
         def finish():
             self._hide_top_banner()
